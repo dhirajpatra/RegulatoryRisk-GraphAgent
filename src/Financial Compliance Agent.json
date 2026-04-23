@@ -1,0 +1,117 @@
+{
+  "name": "Financial Compliance Agent",
+  "description": "An AI agent designed for compliance officers to analyze regulatory adherence, counterparty risk, and risk event history in financial institutions.",
+  "system_prompt": "You are RegulatoryRisk GraphAgent, an expert financial compliance advisor with deep knowledge of Basel IV, Basel III, DORA, Dodd-Frank, and SREP regulations. You have access to a knowledge graph of financial institutions, their regulatory obligations, implemented controls, counterparty exposures, and historical risk events.\n\nWhen answering questions:\n- Always cite the specific graph relationships you traversed to reach your answer\n- Explain WHY something is compliant or non-compliant, not just whether it is\n- For counterparty risk, always quantify the exposure in USD and number of hops\n- For missing controls, always state which specific rule requires that control\n- For risk events, always connect them to the rule that was violated\n- Never give a one-line answer — always explain the compliance reasoning behind it\n\nTool priority: Use Cypher Template tools first. Use Similarity Search for incident matching. Use Text2Cypher only as absolute last resort for simple aggregations.",
+  "is_private": false,
+  "is_mcp_enabled": true,
+  "tools": [
+    {
+      "name": "Missing Regulatory Controls for Bank",
+      "description": "Identifies which regulatory controls a specific bank is currently missing based on applicable regulations.",
+      "enabled": true,
+      "type": "cypherTemplate",
+      "config": {
+        "template": "MATCH (e:Entity {name: $bank_name})\nMATCH (e)-[:SUBJECT_TO]->(:Regulation)-[:CONTAINS]->(:Rule)-[:REQUIRES_CONTROL]->(requiredControl:Control)\nWHERE NOT EXISTS {\n  (e)-[:IMPLEMENTS]->(requiredControl)\n}\nRETURN DISTINCT requiredControl.name AS MissingControl, requiredControl.description AS ControlDescription, requiredControl.category AS Category\nORDER BY requiredControl.name",
+        "parameters": [
+          {
+            "name": "bank_name",
+            "data_type": "string",
+            "description": "The exact name of the financial institution (Entity)."
+          }
+        ]
+      }
+    },
+    {
+      "name": "Counterparty Contagion Paths",
+      "description": "Finds potential multi-hop counterparty contagion risk paths between two specified banks, showing the path and aggregated exposure.",
+      "enabled": true,
+      "type": "cypherTemplate",
+      "config": {
+        "template": "MATCH p=(startBank:Entity {name: $start_bank})-[:COUNTERPARTY_OF*1..3]-(endBank:Entity)\nRETURN\n  [node IN NODES(p) | node.name] AS Path,\n  REDUCE(totalExposure = 0, rel IN RELATIONSHIPS(p) | totalExposure + rel.exposure_usd) AS TotalExposureUSD,\n  LENGTH(p) AS Hops,\n  endBank.name AS ConnectedBank,\n  endBank.country AS Country\nORDER BY TotalExposureUSD DESC, Hops ASC\nLIMIT 10",
+        "parameters": [
+          {
+            "name": "start_bank",
+            "data_type": "string",
+            "description": "The exact name of the starting financial institution (Entity)."
+          }
+        ]
+      }
+    },
+    {
+      "name": "Rules Violated by Risk Event",
+      "description": "Retrieves the rules that were triggered or violated by a specific risk event.",
+      "enabled": true,
+      "type": "cypherTemplate",
+      "config": {
+        "template": "MATCH (e:Entity)-[:INVOLVED_IN]->(re:RiskEvent {id: $risk_event_id})-[:TRIGGERED_BY]->(rule:Rule)<-[:CONTAINS]-(reg:Regulation)\nRETURN \n  re.type AS EventType,\n  re.severity AS Severity,\n  re.date AS EventDate,\n  re.description AS EventDescription,\n  e.name AS EntityInvolved,\n  rule.id AS RuleID,\n  rule.section AS RuleSection,\n  rule.text AS RuleText,\n  reg.name AS Regulation\nORDER BY rule.id",
+        "parameters": [
+          {
+            "name": "risk_event_id",
+            "data_type": "string",
+            "description": "The unique identifier of the RiskEvent."
+          }
+        ]
+      }
+    },
+    {
+      "name": "Bank Regulations and Enforcement",
+      "description": "Lists the regulations a bank is subject to and details about the enforcing regulator, if available.",
+      "enabled": true,
+      "type": "cypherTemplate",
+      "config": {
+        "template": "MATCH (bank:Entity {name: $bank_name})-[st:SUBJECT_TO]->(reg:Regulation)\nOPTIONAL MATCH (reg)-[:ENFORCED_BY]->(regulator:Regulator)\nRETURN\n    reg.name AS RegulationName,\n    reg.description AS Description,\n    reg.jurisdiction AS Jurisdiction,\n    reg.effective_date AS EffectiveDate,\n    regulator.name AS EnforcedByRegulator,\n    regulator.authority_level AS RegulatorAuthorityLevel,\n    st.since_date AS SubjectToSince\nORDER BY RegulationName",
+        "parameters": [
+          {
+            "name": "bank_name",
+            "data_type": "string",
+            "description": "The exact name of the financial institution (Entity)."
+          }
+        ]
+      }
+    },
+    {
+      "name": "Superseding Basel Rules",
+      "description": "Traces which 'Basel IV' rules supersede older 'Basel III' rules.",
+      "enabled": true,
+      "type": "cypherTemplate",
+      "config": {
+        "template": "MATCH (newRule:Rule)-[:SUPERSEDES]->(oldRule:Rule)\nMATCH (newReg:Regulation)-[:CONTAINS]->(newRule)\nMATCH (oldReg:Regulation)-[:CONTAINS]->(oldRule)\nRETURN\n  newReg.name AS NewRegulation,\n  newRule.id AS NewRuleID,\n  newRule.section AS NewRuleSection,\n  newRule.text AS NewRuleText,\n  oldReg.name AS SupersedesRegulation,\n  oldRule.id AS OldRuleID,\n  oldRule.section AS OldRuleSection,\n  oldRule.text AS OldRuleText\nORDER BY newRule.id",
+        "parameters": []
+      }
+    },
+    {
+      "name": "Search Similar Risk Events",
+      "description": "Given a description of a risk incident, finds the most semantically similar past risk events from the knowledge graph. Use this tool when the user describes a new incident or asks about similar historical events, breaches, or violations.",
+      "enabled": true,
+      "type": "similaritySearch",
+      "config": {
+        "provider": "vertexai",
+        "model": "gemini-embedding-001",
+        "index": "risk_event_embedding",
+        "top_k": 10
+      }
+    },
+    {
+      "name": "Natural Language to Cypher Tool",
+      "description": "Last resort fallback tool only. Use this tool ONLY when none of the other specialized tools (Missing Regulatory Controls, Counterparty Contagion Paths, Rules Violated by Risk Event, Bank Regulations and Enforcement, Superseding Basel Rules, Search Similar Risk Events) can answer the question. Suitable for ad-hoc aggregation queries such as counting entities, listing all regulations, or summarizing statistics across the graph.",
+      "enabled": true,
+      "type": "text2cypher"
+    },
+    {
+      "name": "Preventive Controls for Risk Event",
+      "description": "Given a risk event ID, finds the controls that would have prevented it by traversing from the triggered rule to its required controls, and checks which of those controls the involved entity had implemented at the time.",
+      "enabled": true,
+      "type": "cypherTemplate",
+      "config": {
+        "template": "MATCH (e:Entity)-[:INVOLVED_IN]->(re:RiskEvent {id: $risk_event_id})-[:TRIGGERED_BY]->(rule:Rule)-[:REQUIRES_CONTROL]->(ctrl:Control)\nOPTIONAL MATCH (e)-[impl:IMPLEMENTS]->(ctrl)\nRETURN\n  re.id AS EventID,\n  re.type AS EventType,\n  e.name AS EntityInvolved,\n  rule.section AS ViolatedRule,\n  ctrl.name AS RequiredControl,\n  ctrl.category AS ControlCategory,\n  ctrl.description AS ControlDescription,\n  CASE WHEN impl IS NULL THEN 'NOT IMPLEMENTED' ELSE impl.status END AS ImplementationStatus,\n  CASE WHEN impl IS NULL THEN 'This control was missing and would have prevented the event'\n  ELSE 'Control existed but may have been insufficient' END AS Assessment\nORDER BY ctrl.category",
+        "parameters": [
+          {
+            "name": "risk_event_id",
+            "data_type": "string",
+            "description": "The ID of the risk event e.g. EVT-001"
+          }
+        ]
+      }
+    }
+  ]
+}
