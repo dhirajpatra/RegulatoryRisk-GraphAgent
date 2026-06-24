@@ -1,4 +1,4 @@
-# RegulatoryRisk-GraphAgent
+# RegulatoryRisk-GraphAgent - 2nd place winner for Neo4J Aura Hackathon 
 
 ## Title: RegulatoryRisk GraphAgent — Financial Compliance Navigator
 
